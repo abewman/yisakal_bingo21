@@ -1,0 +1,237 @@
+import logging
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    WebAppInfo,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+# የውሂብ ማከማቻዎች (Database mocks)
+users_db = {}  # {user_id: {"phone": str, "balance": float, "banned": bool}}
+pending_deposits = {}  # {user_id: amount}
+
+# አዲሱ እና ትክክለኛው የ GitHub Pages Web App ሊንክ
+WEB_APP_URL = "https://abewman.github.io/yisakal_bingo21/"
+
+# የአድሚን ቴሌግራም ID (እዚህ ጋር የርስዎን የቴሌግራም ID ያስገቡ)
+ADMIN_ID = 123456789  # መተካት አለብዎት
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  user = update.effective_user
+  user_id = user.id
+  user_name = user.first_name
+
+  # ተጠቃሚው አስቀድሞ ተመዝግቦ ከሆነ
+  if user_id in users_db and users_db[user_id].get("phone"):
+    if users_db[user_id].get("banned"):
+      await update.message.reply_text(
+          "❌ ከዚህ ጨዋታ ታግደዋል! ድጋፍ ሰጪዎችን ያግኙ።"
+      )
+      return
+    await show_main_menu(update, user_name)
+    return
+
+  # ስልክ ቁጥር እንዲያጋራ የሚጠይቅ አዝራር
+  contact_keyboard = [[KeyboardButton("📱 ስልክ ቁጥርዎን ያጋሩ (Register)", request_contact=True)]]
+  reply_markup = ReplyKeyboardMarkup(
+      contact_keyboard, resize_keyboard=True, one_time_keyboard=True
+  )
+
+  await update.message.reply_text(
+      f"ሰላም {user_name}! እንኳን ወደ Wana Bingo በደህና መጡ።\n\n"
+      "ለመጫወት እና የ 10 ብር ቦነስ ለማግኘት እባክዎ ከታች ያለውን አዝራር በመጫን ስልክ ቁጥርዎን ያጋሩ!",
+      reply_markup=reply_markup,
+  )
+
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  user = update.effective_user
+  user_id = user.id
+  contact = update.message.contact
+
+  if contact and contact.user_id == user_id:
+    phone_number = contact.phone_number
+
+    # ተጠቃሚውን መመዝገብ እና የ 10 ብር ቦነስ መስጠት
+    users_db[user_id] = {
+        "phone": phone_number,
+        "balance": 10.0,
+        "banned": False,
+        "name": user.first_name,
+    }
+
+    await update.message.reply_text(
+        "🎉 ምዝገባዎ ተሳክቷል! እንኳን ደስ አለዎት 🎁 10 ብር የቦነስ መጫወቻ ወደ ዋሌትዎ ገብቷል።"
+    )
+    await show_main_menu(update, user.first_name)
+  else:
+    await update.message.reply_text(
+        "❌ ትክክለኛ ስልክ ቁጥር ማጋራት ይኖርብዎታል። እባክዎ እንደገና ይሞክሩ።"
+    )
+
+
+async def show_main_menu(update: Update, user_name: str):
+  keyboard = [
+      [KeyboardButton("🎮 Play now 🎮", web_app=WebAppInfo(url=WEB_APP_URL))],
+      [
+          KeyboardButton("Check Balance 💰"),
+          KeyboardButton("Game Instruction 📖"),
+      ],
+      [KeyboardButton("Deposit 💳"), KeyboardButton("Withdraw 💸")],
+      [
+          KeyboardButton("transaction history 📊"),
+          KeyboardButton("game history 🎲"),
+      ],
+      [KeyboardButton("Invite Friends 🤝"), KeyboardButton("Contact Support 📞")],
+  ]
+  reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+  await update.message.reply_text(
+      f"እንኳን ደህና መጡ {user_name}! ዋናውን ሜኑ በመጠቀም የሚፈልጉትን ማከናወን ይችላሉ።",
+      reply_markup=reply_markup,
+  )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  text = update.message.text
+  user_id = update.effective_user.id
+
+  if user_id not in users_db or not users_db[user_id].get("phone"):
+    await update.message.reply_text(
+        "እባክዎ መጀመሪያ /start በመጫን ስልክ ቁጥርዎን በማጋራት ይመዝገቡ!"
+    )
+    return
+
+  if users_db[user_id].get("banned"):
+    await update.message.reply_text("❌ ከጨዋታው ታግደዋል።")
+    return
+
+  if text == "Check Balance 💰":
+    bal = users_db[user_id]["balance"]
+    await update.message.reply_text(f"💰 Your current balance is {bal} ETB.")
+
+  elif text == "Game Instruction 📖":
+    await update.message.reply_text(
+        "📖 **የ Wana Bingo ጨዋታ ህግጋት**:\n\n1. ካርቴላ ይምረጡ።\n2. ቁጥሮች ሲጠሩ ይፈትሹ።\n3."
+        " BINGO ሲሉ ትክክል ከሆነ ሽልማት ያገኛሉ!",
+        parse_mode="Markdown",
+    )
+
+  elif text == "Deposit 💳":
+    pending_deposits[user_id] = True
+    await update.message.reply_text(
+        "💳 ገንዘብ ገቢ ለማድረግ (Deposit) እባክዎ ወደ ባንክ ወይም ቴሌብር አካውንታችን ያስተላልፉና"
+        " የደረሰኝ ፎቶ (Screenshot) በዚህ ቦት ላይ ይላኩ።\n\nየሂሳብ ቁጥር: 1000xxxxxx (CBE)"
+        " / 09xxxxxxxx (TeleBirr)"
+    )
+
+  elif text == "Withdraw 💸":
+    bal = users_db[user_id]["balance"]
+    if bal < 50:
+      await update.message.reply_text(
+          "❌ ማውጣት የሚችሉት குறைந்தபட்சው 50 ብር ሲኖር ነው።"
+      )
+    else:
+      await update.message.reply_text(
+          "💸 የውሃ ፍላጎትዎ ተቀብሏል። ገንዘቡ በሚመዘገብበት ስልክ ቁጥር ይላካል።"
+      )
+
+  elif text == "Contact Support 📞":
+    await update.message.reply_text("📞 የድጋፍ ማዕከል አድራሻ: @WanaSupport")
+
+  elif update.message.photo:
+    pending_deposits[user_id] = "waiting_approval"
+    caption_to_admin = (
+        f"📥 **አዲስ የገንዘብ ማስገቢያ (Deposit) ጥያቄ**\n\nተጠቃሚ ID: {user_id}\nስም:"
+        f" {update.effective_user.first_name}\nስልክ:"
+        f" {users_db[user_id]['phone']}"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "✅ አረጋግጥ (Approve)", callback_data=f"app_{user_id}"
+            ),
+            InlineKeyboardButton("❌ ውድቅ አድርግ (Reject)", callback_data=f"rej_{user_id}"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=update.message.photo[-1].file_id,
+        caption=caption_to_admin,
+        reply_markup=reply_markup,
+    )
+    await update.message.reply_text(
+        "✅ ደረሰኝዎ ደርሷል! አድሚኑ አረጋግጦ ዋሌትዎ ላይ እስከሚጨምር በጥቂት ደቂቃዎች ውስጥ ይጠብቁ።"
+    )
+
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  query = update.callback_query
+  await query.answer()
+  data = query.data
+
+  if data.startswith("app_"):
+    target_user_id = int(data.split("_")[1])
+    deposit_amount = 50.0
+    if target_user_id in users_db:
+      users_db[target_user_id]["balance"] += deposit_amount
+      pending_deposits[target_user_id] = False
+      await context.bot.send_message(
+          chat_id=target_user_id,
+          text=(
+              f"✅ የ {deposit_amount} ብር ገቢ ጥያቄዎ ጸድቋል! አሁን ያለው ጠቅላላ ሒሳብ:"
+              f" {users_db[target_user_id]['balance']} ብር ነው።"
+          ),
+      )
+      await query.edit_message_caption(
+          caption=query.message.caption + "\n\n🟢 **ጸድቋል (Approved)**"
+      )
+
+  elif data.startswith("rej_"):
+    target_user_id = int(data.split("_")[1])
+    pending_deposits[target_user_id] = False
+    await context.bot.send_message(
+        chat_id=target_user_id,
+        text="❌ የገንዘብ ማስገቢያ ጥያቄዎ ውድቅ ተደርጓል። እባክዎ ትክክለኛ ደረሰኝ ይላኩ።",
+    )
+    await query.edit_message_caption(
+        caption=query.message.caption + "\n\n🔴 **ውድቅ ተደርጓል (Rejected)**"
+    )
+
+
+if __name__ == "__main__":
+  TOKEN = "8779045442:AAFrcSKQyOnjicF3AZgCEArVq0BpgVxOJ0g"
+
+  application = ApplicationBuilder().token(TOKEN).build()
+
+  application.add_handler(CommandHandler("start", start))
+  application.add_handler(
+      MessageHandler(filters.CONTACT & ~filters.COMMAND, contact_handler)
+  )
+  application.add_handler(
+      MessageHandler(
+          (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message
+      )
+  )
+  application.add_handler(CallbackQueryHandler(admin_callback))
+
+  print("Wana Bingo Production Bot እየሰራ ነው...")
+  application.run_polling()
